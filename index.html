@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reaction Time: Colour vs Shape</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #1e1e24;
+    color: #eee;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px 16px 40px;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: #aaa; margin: 0 0 20px; text-align: center; max-width: 600px; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: center;
+    margin-bottom: 16px;
+  }
+  label { font-size: 0.95rem; }
+  select, input[type=text] {
+    padding: 6px 8px; border-radius: 6px; border: 1px solid #555; background: #2b2b33; color: #eee;
+  }
+  button {
+    padding: 10px 22px; font-size: 1rem; border: none; border-radius: 8px; cursor: pointer;
+    background: #4c8bf5; color: white; font-weight: 600;
+  }
+  button:disabled { background: #555; cursor: not-allowed; }
+  button.secondary { background: #3a3a44; }
+  #stage {
+    width: min(420px, 100%);
+    aspect-ratio: 1 / 1;
+    background: #2b2b33;
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    user-select: none; cursor: pointer;
+    margin-bottom: 12px;
+  }
+  #stimulus { width: 55%; height: 55%; }
+  .shape-square   { clip-path: none; }
+  .shape-circle   { clip-path: circle(50% at 50% 50%); }
+  .shape-triangle { clip-path: polygon(50% 0%, 100% 100%, 0% 100%); }
+  .shape-diamond  { clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); }
+  #message { min-height: 1.6em; font-size: 1.1rem; margin-bottom: 12px; text-align: center; }
+  .stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;
+    width: min(600px, 100%); margin: 16px 0;
+  }
+  .stat { background: #2b2b33; border-radius: 8px; padding: 10px; text-align: center; }
+  .stat b { display: block; font-size: 1.3rem; }
+  table { border-collapse: collapse; width: min(600px, 100%); font-size: 0.9rem; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid #3a3a44; text-align: left; }
+  th { color: #aaa; font-weight: 600; }
+  .tablewrap { width: min(600px, 100%); max-height: 300px; overflow-y: auto; }
+</style>
+</head>
+<body>
+
+<h1>Reaction Time: Colour vs Shape</h1>
+<p class="sub">Press <b>Ready</b>. After a random delay, either the <b>colour</b> or the <b>shape</b> will change (never both).
+Click the box or press <b>Space</b> as soon as you see the change.</p>
+
+<div class="controls">
+  <label>Participant ID <input type="text" id="participant" placeholder="e.g. P01" size="8"></label>
+  <label>Condition
+    <select id="mode">
+      <option value="mixed">Mixed (random colour or shape)</option>
+      <option value="colour">Colour changes only</option>
+      <option value="shape">Shape changes only</option>
+    </select>
+  </label>
+</div>
+
+<div id="stage"><div id="stimulus"></div></div>
+<div id="message">Press Ready to start a trial.</div>
+
+<div class="controls">
+  <button id="readyBtn">Ready</button>
+  <button id="downloadBtn" class="secondary">Download CSV</button>
+  <button id="clearBtn" class="secondary">Clear results</button>
+</div>
+
+<div class="stats">
+  <div class="stat">Colour trials<b id="colourCount">0</b></div>
+  <div class="stat">Colour mean (ms)<b id="colourMean">–</b></div>
+  <div class="stat">Shape trials<b id="shapeCount">0</b></div>
+  <div class="stat">Shape mean (ms)<b id="shapeMean">–</b></div>
+</div>
+
+<div class="tablewrap">
+  <table>
+    <thead><tr><th>#</th><th>Change</th><th>From</th><th>To</th><th>RT (ms)</th></tr></thead>
+    <tbody id="resultsBody"></tbody>
+  </table>
+</div>
+
+<script>
+// ---- Settings ----
+const MIN_DELAY_MS = 1500;   // shortest wait before the change
+const MAX_DELAY_MS = 4500;   // longest wait before the change
+const TIMEOUT_MS   = 3000;   // trial counts as a miss if no response by then
+
+const COLOURS = { red: '#e53935', blue: '#1e88e5', green: '#43a047', yellow: '#fdd835' };
+const SHAPES  = ['square', 'circle', 'triangle', 'diamond'];
+
+// ---- State ----
+let state = 'idle';          // idle | waiting | changed
+let changeTimer = null, timeoutTimer = null;
+let changeTime = 0;
+let current = null;          // { colour, shape }
+let pending = null;          // details of the upcoming change
+let results = [];
+
+const $ = id => document.getElementById(id);
+const stimulus = $('stimulus'), message = $('message'), readyBtn = $('readyBtn');
+
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const pickOther = (arr, not) => pick(arr.filter(x => x !== not));
+
+function draw({ colour, shape }) {
+  stimulus.className = 'shape-' + shape;
+  stimulus.style.background = COLOURS[colour];
+}
+
+function startTrial() {
+  if (state !== 'idle') return;
+  const colourNames = Object.keys(COLOURS);
+  current = { colour: pick(colourNames), shape: pick(SHAPES) };
+  draw(current);
+
+  const mode = $('mode').value;
+  const type = mode === 'mixed' ? pick(['colour', 'shape']) : mode;
+  pending = type === 'colour'
+    ? { type, from: current.colour, to: pickOther(colourNames, current.colour) }
+    : { type, from: current.shape,  to: pickOther(SHAPES, current.shape) };
+
+  state = 'waiting';
+  readyBtn.disabled = true;
+  message.textContent = 'Wait for the change...';
+
+  const delay = MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS);
+  changeTimer = setTimeout(applyChange, delay);
+}
+
+function applyChange() {
+  const next = { ...current, [pending.type]: pending.to };   // only ONE variable changes
+  draw(next);
+  // Start timing on the frame the change is actually painted
+  requestAnimationFrame(() => {
+    changeTime = performance.now();
+    state = 'changed';
+    timeoutTimer = setTimeout(() => endTrial(null), TIMEOUT_MS);
+  });
+}
+
+function respond() {
+  if (state === 'waiting') {
+    clearTimeout(changeTimer);
+    message.textContent = 'Too early! That trial was discarded. Press Ready to try again.';
+    reset();
+  } else if (state === 'changed') {
+    endTrial(performance.now() - changeTime);
+  }
+}
+
+function endTrial(rt) {
+  clearTimeout(timeoutTimer);
+  if (rt === null) {
+    message.textContent = 'Too slow (no response within ' + TIMEOUT_MS / 1000 + 's). Trial not recorded.';
+  } else {
+    rt = Math.round(rt);
+    results.push({
+      trial: results.length + 1,
+      participant: $('participant').value.trim(),
+      change: pending.type,
+      from: pending.from,
+      to: pending.to,
+      rt_ms: rt,
+      timestamp: new Date().toISOString()
+    });
+    message.textContent = `${pending.type === 'colour' ? 'Colour' : 'Shape'} change: ${rt} ms`;
+    save();
+    render();
+  }
+  reset();
+}
+
+function reset() {
+  state = 'idle';
+  readyBtn.disabled = false;
+  readyBtn.focus();
+}
+
+function mean(arr) { return arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : '–'; }
+
+function render() {
+  const c = results.filter(r => r.change === 'colour').map(r => r.rt_ms);
+  const s = results.filter(r => r.change === 'shape').map(r => r.rt_ms);
+  $('colourCount').textContent = c.length; $('colourMean').textContent = mean(c);
+  $('shapeCount').textContent  = s.length; $('shapeMean').textContent  = mean(s);
+  $('resultsBody').innerHTML = results.slice().reverse().map(r =>
+    `<tr><td>${r.trial}</td><td>${r.change}</td><td>${r.from}</td><td>${r.to}</td><td>${r.rt_ms}</td></tr>`
+  ).join('');
+}
+
+function downloadCSV() {
+  if (!results.length) { alert('No results yet.'); return; }
+  const headers = Object.keys(results[0]);
+  const rows = results.map(r => headers.map(h => `"${String(r[h]).replace(/"/g, '""')}"`).join(','));
+  const csv = [headers.join(','), ...rows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  const id = $('participant').value.trim() || 'results';
+  a.href = URL.createObjectURL(blob);
+  a.download = `reaction-times-${id}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function save() { try { localStorage.setItem('rt-results', JSON.stringify(results)); } catch (e) {} }
+function load() { try { results = JSON.parse(localStorage.getItem('rt-results')) || []; } catch (e) { results = []; } }
+
+// ---- Events ----
+readyBtn.addEventListener('click', startTrial);
+$('stage').addEventListener('mousedown', respond);
+$('stage').addEventListener('touchstart', e => { e.preventDefault(); respond(); }, { passive: false });
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();          // stop Space from also clicking the Ready button
+    if (!e.repeat) respond();
+  }
+});
+$('downloadBtn').addEventListener('click', downloadCSV);
+$('clearBtn').addEventListener('click', () => {
+  if (confirm('Delete all recorded results?')) { results = []; save(); render(); message.textContent = 'Results cleared.'; }
+});
+
+// Initial display
+load();
+current = { colour: 'blue', shape: 'square' };
+draw(current);
+render();
+</script>
+</body>
+</html>
