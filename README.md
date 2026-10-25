@@ -1,4 +1,4 @@
-# colourshapereactiontime
+#   Colour vs Shape Reaction Time Test
 Test for SCCM5410 to determine if reacting to colour change or shape change is faster.
 
 Records reaction time and changes with various settings. Please fork and redeploy a page if you want to change anything.
